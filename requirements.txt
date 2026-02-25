@@ -1,0 +1,7 @@
+# Required Python packages
+google-genai
+python-dotenv
+python-docx
+pypandoc
+
+# Note: Ensure Pandoc is installed on your system.
