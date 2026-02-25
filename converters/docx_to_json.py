@@ -3,7 +3,11 @@ import json
 import re
 from docx import Document
 
-folder_path = '/home/morgan0429/Taide/test' 
+folder_path = 'rawdata' 
+output_folder = 'processed_data'
+
+# Ensure the output folder exists
+os.makedirs(output_folder, exist_ok=True)
 
 def docx_to_deep_structured_json(folder):
     # 判斷大標題：一、 二、
@@ -66,7 +70,7 @@ def docx_to_deep_structured_json(folder):
 
                 # 輸出 JSON
                 json_filename = filename.replace('.docx', '.json')
-                json_path = os.path.join(folder, json_filename)
+                json_path = os.path.join(output_folder, json_filename)  # Updated to use output folder
                 
                 with open(json_path, 'w', encoding='utf-8') as json_file:
                     json.dump(document_data, json_file, ensure_ascii=False, indent=4)
