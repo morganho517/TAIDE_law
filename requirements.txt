@@ -1,7 +1,15 @@
-# Required Python packages
+# Python 套件
 google-genai
 python-dotenv
 python-docx
 pypandoc
 
-# Note: Ensure Pandoc is installed on your system.
+# 系統依賴（需另行安裝，不透過 pip）
+# ----------------------------------------
+# Pandoc：轉換 docx -> Markdown
+#   Ubuntu:  sudo apt install -y pandoc
+#   macOS:   brew install pandoc
+#
+# LibreOffice Writer：轉換舊版 .doc -> .docx
+#   Ubuntu:  sudo apt install -y libreoffice-writer
+#   macOS:   brew install --cask libreoffice

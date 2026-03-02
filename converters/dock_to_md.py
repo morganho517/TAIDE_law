@@ -1,6 +1,16 @@
 import os
 import re
+import sys
+import logging
+import shutil
+import subprocess
+import tempfile
+from datetime import datetime
+from pathlib import Path
 import pypandoc
+
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from utils import get_all_file_paths, RAWDATA_DIR
 
 
 # ===== Helpers =====
@@ -123,38 +133,127 @@ type: regulation
     return header + body.strip() + "\n"
 
 
+# ===== Helpers =====
+
+def _doc_to_docx(doc_path: Path, out_dir: Path) -> Path:
+    """用 soffice 將 .doc 轉為 .docx，輸出至 out_dir，回傳轉換後的 Path。
+    先複製成 ASCII 臨時檔名再轉，避免 soffice 不支援非 ASCII 路徑。"""
+    import uuid
+    tmp_src = out_dir / f"_src_{uuid.uuid4().hex}.doc"
+    shutil.copy2(doc_path, tmp_src)
+    try:
+        result = subprocess.run(
+            [
+                "soffice", "--headless",
+                "--convert-to", "docx",
+                "--outdir", str(out_dir),
+                str(tmp_src),
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"soffice failed: {result.stderr.strip() or result.stdout.strip()}")
+        converted = out_dir / (tmp_src.stem + ".docx")
+        if not converted.exists():
+            raise FileNotFoundError(
+                f"soffice 執行成功但找不到輸出檔：{converted}\n"
+                f"stdout: {result.stdout.strip()}\nstderr: {result.stderr.strip()}"
+            )
+        return converted
+    finally:
+        tmp_src.unlink(missing_ok=True)
+
+
 # ===== Main =====
 
-def convert_all_docx_to_md(folder_path: str):
-    output_folder = './processed_data'  # New output folder
-    os.makedirs(output_folder, exist_ok=True)  # Ensure the output folder exists
+OUTPUT_DIR = Path(__file__).parent.parent / "processed_data"
+LOG_DIR = Path(__file__).parent.parent / "logs"
 
-    for filename in os.listdir(folder_path):
-        if not filename.lower().endswith(".docx"):
+
+def _setup_fail_logger() -> logging.Logger:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = LOG_DIR / f"convert_fail_{timestamp}.log"
+
+    logger = logging.getLogger("convert_fail")
+    logger.setLevel(logging.ERROR)
+    logger.handlers.clear()
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+    logger.addHandler(fh)
+
+    return logger, log_path
+
+
+def convert_all_docx_to_md(
+    root: Path = RAWDATA_DIR,
+    extensions: set[str] = {".doc", ".docx"},
+):
+    """掃描 root 目錄下所有 doc/docx，轉換為 Markdown 並輸出至 processed_data/，
+    保留相對於 root 的子目錄結構。失敗項目寫入 logs/convert_fail_<timestamp>.log。"""
+    file_paths = get_all_file_paths(root, extensions)
+    OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+    logger, log_path = _setup_fail_logger()
+    fail_count = 0
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="doc2docx_"))
+
+    for input_path in file_paths:
+        rel = input_path.relative_to(root)          # e.g. 主流程法規/10.人資處/xxx.docx
+        output_path = OUTPUT_DIR / rel.with_suffix(".md")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        # .doc → 先用 soffice 轉成 .docx
+        pandoc_input = input_path
+        if input_path.suffix.lower() == ".doc":
+            try:
+                pandoc_input = _doc_to_docx(input_path, tmp_dir)
+            except Exception as e:
+                msg = f"{rel} | soffice {e.__class__.__name__}: {e}"
+                print(f"SKIP: {msg}")
+                logger.error(msg)
+                fail_count += 1
+                continue
+
+        try:
+            md_text = pypandoc.convert_file(
+                str(pandoc_input),
+                "gfm",
+                extra_args=[
+                    "--wrap=none",
+                    "--markdown-headings=atx",
+                ],
+            )
+        except Exception as e:
+            msg = f"{rel} | pandoc {e.__class__.__name__}: {e}"
+            print(f"SKIP: {msg}")
+            logger.error(msg)
+            fail_count += 1
             continue
 
-        input_path = os.path.join(folder_path, filename)
-        output_path = os.path.join(output_folder, filename.replace(".docx", ".md"))  # Updated to use output folder
+        try:
+            md_text = clean_markdown(md_text)
+            md_text = beautify_structure(md_text)
+            final_text = add_metadata(input_path.name, md_text)
+            output_path.write_text(final_text, encoding="utf-8")
+            print(f"Done: {rel} -> {output_path.relative_to(OUTPUT_DIR.parent)}")
+        except Exception as e:
+            msg = f"{rel} | post-process {e.__class__.__name__}: {e}"
+            print(f"SKIP: {msg}")
+            logger.error(msg)
+            fail_count += 1
 
-        md_text = pypandoc.convert_file(
-            input_path,
-            "gfm",
-            extra_args=[
-                "--wrap=none",
-                # reduce weird artifacts
-                "--markdown-headings=atx",
-            ],
-        )
+    shutil.rmtree(tmp_dir, ignore_errors=True)
 
-        md_text = clean_markdown(md_text)
-        md_text = beautify_structure(md_text)
-        final_text = add_metadata(filename, md_text)
-
-        with open(output_path, "w", encoding="utf-8") as f:
-            f.write(final_text)
-
-        print(f"Done: {filename} -> {os.path.basename(output_path)}")
+    if fail_count:
+        print(f"\n⚠️  共 {fail_count} 個檔案轉換失敗，詳見 {log_path}")
+    else:
+        print("\n✅ 全部轉換完成，無失敗項目")
+        log_path.unlink(missing_ok=True)  # 無失敗就刪除空 log
 
 
 if __name__ == "__main__":
-    convert_all_docx_to_md("./rawdata")
+    convert_all_docx_to_md()

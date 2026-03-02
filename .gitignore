@@ -24,7 +24,14 @@ ENV/
 .DS_Store
 Thumbs.db
 
+# log
+*.log
+
 # data
 *.docx
+*.doc
 *.json
+*.pdf
+*.xlsx
+*.7z
 processed_data
